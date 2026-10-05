@@ -1,0 +1,62 @@
+name: Managed runner integration
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2]
+    runs-on: ubicloud-standard-4
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify Linux runner and compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          uname -a
+          nproc
+          printf '#include <stdio.h>\nint main(void) { puts("compiled-ok"); return 0; }\n' > smoke.c
+          cc smoke.c -o smoke
+          test "$(./smoke)" = compiled-ok
+          curl --fail --silent --show-error --max-time 30 https://api.github.com/zen
+          printf '%s\n' '${{ github.sha }}' > evidence.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-${{ matrix.slot }}
+          path: evidence.txt
+          retention-days: 3
+  macos:
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['15', '26']
+    runs-on: namespace-profile-macos-${{ matrix.version }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-1
+          path: transferred
+      - name: Verify macOS and cross-provider artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = '${{ matrix.version }}'
+          test "$(cat transferred/evidence.txt)" = '${{ github.sha }}'
+          sw_vers
+          xcodebuild -version
+          sysctl -n hw.ncpu hw.memsize
+          printf '#include <stdio.h>\nint main(void) { puts("compiled-ok"); return 0; }\n' > smoke.c
+          cc smoke.c -o smoke
+          test "$(./smoke)" = compiled-ok
