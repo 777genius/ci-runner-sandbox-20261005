@@ -1,0 +1,76 @@
+name: Notifications unit regression canary
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: namespace-profile-macos-26, kind: darwin, go: '1.26' }
+          - { runner: windows-latest, kind: windows, go: '1.25' }
+          - { runner: windows-latest, kind: windows, go: '1.26' }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: 777genius/agent-notifications
+          ref: 05bb91fe8afaef72da62654e3a36d443bf0ab019
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          path: fixture
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Red and green missing-helper contract, then notifier race suite
+        if: matrix.kind == 'darwin'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testRoot = Join-Path $env:RUNNER_TEMP ('NEWTEST-ambient-helper-' + [guid]::NewGuid())
+          $shim = Join-Path $testRoot 'bin'
+          New-Item -ItemType Directory $shim | Out-Null
+          $marker = Join-Path $testRoot 'ambient-called'
+          $helper = Join-Path $shim 'terminal-notifier'
+          Set-Content -NoNewline -LiteralPath $helper -Value "#!/bin/sh`nprintf 'called' > `"`$NOTIFIER_AMBIENT_MARKER`"`n/bin/sleep 30`n"
+          chmod 700 $helper
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $originalPath = $env:PATH
+          $env:PATH = $shim + [System.IO.Path]::PathSeparator + $originalPath
+          $env:NOTIFIER_AMBIENT_MARKER = $marker
+          Set-Location source
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Continue'
+          $baseline = go test -count=1 -race -timeout 5s -v ./internal/notifier -run '^TestSendWithTerminalNotifier_PathNotFound$' 2>&1
+          $baselineExit = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          $baseline | Write-Output
+          if ($baselineExit -eq 0 -or -not (Test-Path -LiteralPath $marker)) { throw 'Old fixture did not reproduce ambient helper execution' }
+          Remove-Item -LiteralPath $marker
+          Copy-Item ../fixture/regression-overlay/notifier_test.go internal/notifier/notifier_test.go
+          go test -count=1 -race -timeout 5s -v ./internal/notifier -run '^TestSendWithTerminalNotifier_PathNotFound$'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath $marker) { throw 'Fixed negative fixture executed ambient helper' }
+          $env:PATH = $originalPath
+          Remove-Item Env:NOTIFIER_AMBIENT_MARKER
+          go test -count=1 -race -timeout 3m -v ./internal/notifier
+          exit $LASTEXITCODE
+      - name: Windows dispatch deadline with race instrumentation
+        if: matrix.kind == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item fixture/regression-overlay/main_test.go source/cmd/claude-notifications/main_test.go
+          Copy-Item fixture/regression-overlay/notifier_test.go source/internal/notifier/notifier_test.go
+          Set-Location source
+          go test -count=3 -race -timeout 3m -v ./cmd/claude-notifications -run '^TestCursorEventMainDispatch$'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -count=1 -race -timeout 3m -v ./internal/notifier
+          exit $LASTEXITCODE
