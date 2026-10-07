@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 
 import { assertFullPackagedGate } from './packaged-ci-policy.mts';
 
-export const PRODUCT_SHA = '78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33';
+export const PRODUCT_SHA = 'a04d16b92e261e3648b54649db16b875344ed185';
 
 function signature(path: string, position: number): Buffer {
   const fd = openSync(path, 'r');
