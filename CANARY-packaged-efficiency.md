@@ -1,7 +1,7 @@
 # TEST packaged Mac efficiency canary
 
 This disposable repository proves the draft-to-full policy for immutable product
-commit `78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33`. Product code is checked out into
+commit `a04d16b92e261e3648b54649db16b875344ed185`. Product code is checked out into
 `product`; the root `window.ts` is a TEST classifier fixture and is never packaged.
 The three source policy files and their source TypeScript configurations are
 byte-identical to the product candidate. The product policy typecheck is retained

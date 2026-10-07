@@ -39,6 +39,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
@@ -76,15 +77,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - name: Checkout immutable product candidate
         uses: actions/checkout@v6
         with:
           repository: 777genius/agent-teams-ai
-          ref: 78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33
+          ref: a04d16b92e261e3648b54649db16b875344ed185
           path: product
           persist-credentials: false
       - name: Verify immutable product candidate
-        run: test "$(git rev-parse HEAD)" = '78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33'
+        run: test "$(git rev-parse HEAD)" = 'a04d16b92e261e3648b54649db16b875344ed185'
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: product/package.json
@@ -143,7 +146,7 @@ jobs:
         env:
           PACKAGED_SCOPE: ${{ needs.packaged-scope.outputs.scope }}
           CANARY_ARCH: ${{ matrix.arch }}
-          PRODUCT_SHA: 78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33
+          PRODUCT_SHA: a04d16b92e261e3648b54649db16b875344ed185
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVIDENCE_DIR: ${{ runner.temp }}/TEST-packaged-efficiency
         run: node ../scripts/ci/packaged-canary-evidence.mts artifacts
@@ -180,6 +183,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
