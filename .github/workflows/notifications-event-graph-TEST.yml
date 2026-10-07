@@ -1,0 +1,84 @@
+name: TEST final Notifications event graph (Linux probes)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review, edited]
+    paths: [README.md]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && github.run_id || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) }}
+
+jobs:
+  # Body/title edits create no canonical check names and cannot cancel full CI.
+  scope:
+    if: ${{ !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) }}
+    name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && 'Metadata edit ignored (scope)' || 'Classify macOS CI scope' }}
+    runs-on: ubicloud-standard-4-arm
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v7
+        with: {fetch-depth: 0, persist-credentials: false}
+      - id: classify
+        run: python3 scripts/ci_macos_scope.py classify
+
+  test:
+    needs: scope
+    if: ${{ !cancelled() && !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) && needs.scope.outputs.mode != 'docs' }}
+    name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && format('Metadata edit ignored (macOS {0})', matrix.go) || format('Test on macOS ({0})', matrix.go) }}
+    runs-on: ubicloud-standard-4-arm
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - go: '1.25'
+            os: macos-15
+          - go: '1.26'
+            os: macos-26
+
+    steps:
+      - name: TEST Linux event-guard probe (not native acceptance)
+        env:
+          TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test -n "$TEST_PR_HEAD"
+          sleep 15
+
+  swift-test:
+    needs: scope
+    if: ${{ !cancelled() && !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) && needs.scope.outputs.mode != 'docs' }}
+    name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && 'Metadata edit ignored (Swift)' || 'Swift notifier tests' }}
+    runs-on: ubicloud-standard-4-arm
+    timeout-minutes: 30
+
+    steps:
+      - name: TEST Linux event-guard probe (not native acceptance)
+        env:
+          TEST_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test -n "$TEST_PR_HEAD"
+          sleep 15
+
+  full-ci:
+    name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && 'Metadata edit ignored (full macOS gate)' || 'Full macOS CI required' }}
+    needs: [scope, test, swift-test]
+    if: ${{ always() && !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) }}
+    runs-on: ubicloud-standard-4-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Require actual full native success on this revision
+        env:
+          CI_MODE: ${{ needs.scope.outputs.mode }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/ci_macos_scope.py gate test swift-test
