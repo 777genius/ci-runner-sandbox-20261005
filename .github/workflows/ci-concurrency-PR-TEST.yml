@@ -1,0 +1,21 @@
+name: TEST PR concurrency preserves final run
+on:
+  pull_request:
+    types: [opened, labeled]
+    paths: ['TEST-ci-concurrency-marker.md']
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  bounded-pr-proof:
+    runs-on: ubicloud-standard-4-arm
+    timeout-minutes: 2
+    steps:
+      - name: Hold a bounded overlap window
+        run: sleep 25
+      - name: Final run completes
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test -n "$PR_HEAD"
