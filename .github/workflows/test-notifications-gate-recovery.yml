@@ -1,0 +1,43 @@
+name: TEST recovered Notifications macOS gate
+
+on:
+  push:
+    branches: [test/notifications-gate-recovery-d039]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  recovered-gate:
+    name: TEST recovered gate (original native evidence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout reviewed recovery helper
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: recovery
+          persist-credentials: false
+      - name: Checkout immutable original native source
+        uses: actions/checkout@v7
+        with:
+          ref: 3ed6b2645913a7119a3dd11c5cc63da124460864
+          fetch-depth: 0
+          path: original
+          persist-credentials: false
+      - name: Authenticate original native evidence and recover only the gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_RECEIPTS: ${{ runner.temp }}/TEST-notifications-recovered-gate
+        run: python3 recovery/scripts/test_notifications_gate_recovery.py original
+      - name: Preserve recovered decision evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: TEST-recovered-notifications-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/TEST-notifications-recovered-gate
+          if-no-files-found: error
+          retention-days: 14
