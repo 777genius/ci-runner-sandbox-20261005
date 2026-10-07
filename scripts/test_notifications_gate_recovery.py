@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 REPO = '777genius/ci-runner-sandbox-20261005'
 PRODUCT = '777genius/agent-notifications'
@@ -106,20 +107,58 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
+def read_api(endpoint, filename, out, calls, raw=False):
+    for attempt in (1, 2):
+        require(calls[0] < 24, 'API call budget exceeded')
+        calls[0] += 1
+        try:
+            result = subprocess.run(['gh', 'api', '--method', 'GET', endpoint], capture_output=True, timeout=90)
+            stderr = result.stderr.decode('utf-8', errors='replace')
+            timed_out = False
+        except subprocess.TimeoutExpired as error:
+            stderr = (error.stderr or b'').decode('utf-8', errors='replace')
+            result = None
+            timed_out = True
+        statuses = [int(code) for code in re.findall(r'\bHTTP[ \t]+(\d{3})\b', stderr)]
+        status = statuses[-1] if statuses else None
+        if any(code in (401, 403) for code in statuses):
+            transient = False
+        elif status is not None:
+            transient = status == 429 or 500 <= status <= 599 or (
+                status == 404 and re.fullmatch(r'repos/[^/]+/[^/]+/actions/jobs/\d+/logs', endpoint) is not None)
+        else:
+            transient = timed_out or re.search(
+                r'(?i)connection reset by peer|TLS handshake timeout|i/o timeout|unexpected EOF|context deadline exceeded|temporary failure in name resolution',
+                stderr) is not None
+        # Redirect URLs can carry signed credentials. Never persist URLs or response bodies on failure.
+        safe_stderr = re.sub(r'https?://\S+', '[redacted URL]', stderr)
+        safe_stderr = re.sub(r'(?i)authorization:[^\r\n]*|bearer\s+\S+', '[redacted authorization]', safe_stderr)
+        safe_stderr = re.sub(r'\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b', '[redacted token]', safe_stderr)
+        safe_stderr = re.sub(r'(?i)((?:token|signature|credential|secret|password)\s*[=:]\s*)\S+', r'\1[redacted]', safe_stderr)
+        retry = (timed_out or result.returncode != 0) and transient and attempt == 1 and calls[0] < 24
+        diagnostic = {'apiCall': calls[0], 'attempt': attempt, 'endpoint': endpoint.split('?', 1)[0],
+                      'exitCode': None if timed_out else result.returncode, 'timedOut': timed_out,
+                      'httpStatus': status, 'redactedStderr': safe_stderr[:8192], 'retrying': retry}
+        (out / f'{filename}.attempt-{attempt}.transport.json').write_text(json.dumps(diagnostic, indent=2) + '\n')
+        if retry:
+            time.sleep(1)
+            continue
+        if timed_out:
+            raise RuntimeError('Read-only GitHub API request timed out; see redacted transport receipt')
+        result.check_returncode()
+        require(len(result.stdout) <= 16 << 20, 'API response exceeded receipt bound')
+        (out / filename).write_bytes(result.stdout)
+        return result.stdout if raw else json.loads(result.stdout)
+
+
 def main():
     original = Path(sys.argv[1]).resolve()
     out = Path(os.environ['RECOVERY_RECEIPTS'])
     out.mkdir(exist_ok=False)
-    calls = 0
+    calls = [0]
 
     def api(endpoint, filename, raw=False):
-        nonlocal calls
-        calls += 1
-        require(calls <= 24, 'API call budget exceeded')
-        result = subprocess.run(['gh', 'api', endpoint], check=True, capture_output=True, timeout=90)
-        require(len(result.stdout) <= 16 << 20, 'API response exceeded receipt bound')
-        (out / filename).write_bytes(result.stdout)
-        return result.stdout if raw else json.loads(result.stdout)
+        return read_api(endpoint, filename, out, calls, raw)
 
     def git(*args):
         return subprocess.check_output(['git', *args], cwd=original).decode().strip()
@@ -193,7 +232,7 @@ def main():
                'originalWorkflowConclusion': run['conclusion'], 'originalGateWasMissing': True,
                'originalRunNotRepaired': True, 'nativeJobsNotRerun': True, 'testHeadSHA': HEAD,
                'checkoutSHA': MERGE, 'checkoutTree': TREE, 'productionPolicyBlobSource': PRODUCTION,
-               'laterProductionDependenciesNotQualifiedByThisCanary': True, 'apiCalls': calls,
+               'laterProductionDependenciesNotQualifiedByThisCanary': True, 'apiCalls': calls[0],
                'derivedNeeds': needs, 'gateCommand': ['python3', 'scripts/ci_macos_scope.py', 'gate', 'test', 'swift-test'],
                'gateExitCode': gate.returncode, 'fixtureBinding': FIXTURES, 'policyBlobs': BLOBS,
                'recoveryRunID': os.environ['GITHUB_RUN_ID'], 'recoveryAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
