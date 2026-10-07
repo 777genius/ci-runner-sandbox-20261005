@@ -56,7 +56,9 @@ jobs:
         package-manager-cache: false
     - name: Install pinned harness dependencies without product lifecycle scripts
       run: pnpm install --frozen-lockfile --ignore-scripts
-    - parallel: &id001
+    - name: Create TEST evidence paths
+      run: mkdir "$RUNNER_TEMP/TEST-mac-exact-head"
+    - parallel:
       - name: Check typed native Mac harness
         run: 'node ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.updater-e2e.json
 
@@ -116,9 +118,6 @@ jobs:
           touch "$RUNNER_TEMP/TEST-mac-exact-head/artifact.complete"
 
           '
-    - name: Create TEST evidence paths
-      run: mkdir "$RUNNER_TEMP/TEST-mac-exact-head"
-    - parallel: *id001
     - name: Native app surrogate after successful common barrier
       run: "set -euo pipefail\nfor phase in typed serialization artifact; do\n  test -f \"$RUNNER_TEMP/TEST-mac-exact-head/$phase.complete\"\ndone\ntouch\
         \ \"$RUNNER_TEMP/TEST-mac-exact-head/native-surrogate.complete\"\n"
