@@ -1,0 +1,196 @@
+name: TEST packaged Mac PR efficiency
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
+    paths:
+      - '.github/workflows/TEST-packaged-efficiency.yml'
+      - 'scripts/ci/packaged-canary-*.mts'
+      - 'tsconfig.packaged-canary.json'
+      - 'scripts/ci/packaged-ci-*.mts'
+      - 'tsconfig.packaged-ci.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'scripts/electron-builder/**'
+      - 'scripts/ensure-electron-install.cjs'
+      - 'scripts/prepare-cpu-features-rebuild.cjs'
+      - 'scripts/postinstall-electron.cjs'
+      - 'src/main/ipc/window.ts'
+
+permissions:
+  contents: read
+
+# Metadata edits use unique groups and noncanonical check names, even if setup fails.
+# A title/body edit must never cancel or replace checks for the same code.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body) && format('metadata-{0}', github.run_id) || 'checks' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body)) }}
+
+jobs:
+  packaged-scope:
+    name: classify packaged smoke
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
+    timeout-minutes: 10
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+      run: ${{ steps.scope.outputs.run }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      - name: Verify packaged CI policy contracts
+        run: node --test scripts/ci/packaged-ci-policy.test.mts scripts/ci/packaged-canary-evidence.test.mts
+      - name: Classify exact local PR diff
+        id: scope
+        run: node scripts/ci/packaged-ci-cli.mts classify
+
+  packaged-smoke:
+    needs: packaged-scope
+    if: needs.packaged-scope.outputs.run == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body) && 'TEST metadata packaged smoke' || 'TEST packaged smoke' }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: product
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            arch: arm64
+            os: darwin
+            runner: ${{ vars.CI_MACOS_ARM_RUNNER || 'namespace-profile-macos-15' }}
+            pack: pack:mac:arm64
+            bundle: release/mac-arm64/Agent Teams AI.app
+          - platform: darwin-x64
+            arch: x64
+            os: darwin
+            runner: macos-15-intel
+            pack: pack:mac:x64
+            bundle: release/mac/Agent Teams AI.app
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Checkout immutable product candidate
+        uses: actions/checkout@v6
+        with:
+          repository: 777genius/agent-teams-ai
+          ref: 78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33
+          path: product
+          persist-credentials: false
+      - name: Verify immutable product candidate
+        run: test "$(git rev-parse HEAD)" = '78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33'
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: product/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: product/.node-version
+          cache: pnpm
+          cache-dependency-path: product/pnpm-lock.yaml
+      - uses: actions/setup-python@v6
+        if: matrix.os != 'darwin'
+        with:
+          python-version: '3.11'
+      - name: Install Linux packaging tools
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools rpm xvfb
+      - name: Restore node-gyp executable bit
+        shell: bash
+        run: |
+          for root in "$(pnpm store path)" "${PNPM_HOME:-}" "$(dirname "$(command -v pnpm)")"; do
+            if [ -d "$root" ]; then
+              find "$root" -path '*/node-gyp/gyp/gyp_main.py' -exec chmod +x {} \; 2>/dev/null || true
+            fi
+          done
+      - name: Install frozen dependencies
+        run: node ./scripts/ci/install-dependencies-with-retry.mjs
+      - name: Typecheck packaged CI policy with pinned compiler
+        run: node ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.packaged-ci.json
+      - name: Typecheck TEST canary contracts with pinned compiler
+        run: node node_modules/@typescript/native/bin/tsc --noEmit -p ../tsconfig.packaged-canary.json
+      - name: Assert Electron binary was provisioned during install
+        run: node -e "const fs=require('node:fs'); const path=require('node:path'); const root=path.dirname(require.resolve('electron/package.json')); const marker=path.join(root,'path.txt'); if(!fs.existsSync(marker) || !fs.existsSync(path.join(root,'dist',fs.readFileSync(marker,'utf8')))) process.exit(1)"
+      - name: Verify native rebuild
+        run: pnpm exec electron-rebuild -f -o node-pty,ssh2,cpu-features,better-sqlite3
+      - name: Stage bundled runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node ./scripts/stage-runtime.mjs --platform ${{ matrix.platform }}
+      - name: Stage terminal platform runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node ./scripts/stage-terminal-platform-runtime.mjs --platform ${{ matrix.platform }}
+      - name: Stage Windows console wrapper
+        if: matrix.os == 'win32'
+        run: node ./scripts/stage-opencode-console-wrapper.mjs --platform ${{ matrix.platform }} --require
+      - name: Build app
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: pnpm build
+      - name: Package unsigned test bundle
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        # Only the two macOS commands omit DMG/ZIP in the intermediate draft lane.
+        # Native rebuild, staging and every bundle smoke below remain mandatory.
+        run: pnpm ${{ matrix.pack }} --publish never ${{ matrix.os == 'darwin' && needs.packaged-scope.outputs.scope == 'app' && '--dir' || '' }}
+      - name: Verify real package targets and preserve TEST identity
+        env:
+          PACKAGED_SCOPE: ${{ needs.packaged-scope.outputs.scope }}
+          CANARY_ARCH: ${{ matrix.arch }}
+          PRODUCT_SHA: 78b7a1d6bb4cd88e0a2c9bde2244959f7295ec33
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVIDENCE_DIR: ${{ runner.temp }}/TEST-packaged-efficiency
+        run: node ../scripts/ci/packaged-canary-evidence.mts artifacts
+      - name: Verify bundle native architecture
+        run: node ./scripts/electron-builder/verifyBundle.cjs "${{ matrix.bundle }}" ${{ matrix.os }} ${{ matrix.arch }}
+      - name: Smoke packaged SQLite and PTY modules
+        run: node ./scripts/electron-builder/smokePackagedNative.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
+      - name: Smoke packaged MCP handshake
+        run: node ./scripts/electron-builder/smokePackagedMcp.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
+      - name: Verify macOS 13 minimum
+        if: matrix.os == 'darwin'
+        run: test "$(plutil -extract LSMinimumSystemVersion raw -o - '${{ matrix.bundle }}/Contents/Info.plist')" = '13.0'
+      - name: Smoke packaged app
+        if: matrix.os != 'linux'
+        run: node ./scripts/electron-builder/smokePackagedApp.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
+      - name: Smoke packaged app under Xvfb
+        if: matrix.os == 'linux'
+        run: xvfb-run -a node ./scripts/electron-builder/smokePackagedApp.cjs "${{ matrix.bundle }}" linux
+
+      - name: Preserve TEST package evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: TEST-packaged-${{ needs.packaged-scope.outputs.scope }}-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/TEST-packaged-efficiency/
+          if-no-files-found: warn
+          retention-days: 3
+
+  packaged-full-gate:
+    needs: [packaged-scope, packaged-smoke]
+    if: always()
+    name: ${{ github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body) && 'TEST metadata mac slice gate' || 'TEST mac slice full gate' }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+      # TEST adaptation: this gate covers two Mac jobs only. Product CI covers all five.
+      - name: Require full verification on both Mac architectures
+        if: needs.packaged-scope.outputs.run != 'false'
+        env:
+          PACKAGED_SCOPE: ${{ needs.packaged-scope.outputs.scope }}
+          SCOPE_RESULT: ${{ needs.packaged-scope.result }}
+          PACKAGED_RESULT: ${{ needs.packaged-smoke.result }}
+        run: node scripts/ci/packaged-canary-evidence.mts gate
+      - name: Preserve existing code checks after metadata edits
+        if: needs.packaged-scope.outputs.run == 'false'
+        run: echo 'Title/body edit only. Existing packaged code checks are unchanged.'

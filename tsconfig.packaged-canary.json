@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.packaged-ci.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": ["./product/node_modules/@types"]
+  },
+  "include": ["scripts/ci/*.mts"]
+}
