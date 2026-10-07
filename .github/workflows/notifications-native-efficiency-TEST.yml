@@ -1,0 +1,149 @@
+name: TEST notifications native fixture efficiency
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/notifications-native-efficiency-TEST.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  native-intel:
+    name: TEST exact-source native Intel fixtures
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    env:
+      BASELINE_SHA: 870b1db851f7908e0ab3dca1e1e9c85d0c85eafb
+      CANDIDATE_SHA: 6dea2369b09883fdb47f419a557bd142e3f25630
+      FIXTURE_TESTS: ^TestEmbeddedSkill(RefusesForeignAndTampered|RenameMigration)$
+      GOTOOLCHAIN: local
+      GOTELEMETRY: off
+      GOENV: off
+    steps:
+      - name: Checkout exact baseline
+        uses: actions/checkout@v7
+        with:
+          repository: 777genius/agent-notifications
+          ref: 870b1db851f7908e0ab3dca1e1e9c85d0c85eafb
+          path: TEST-baseline
+          persist-credentials: false
+      - name: Checkout exact candidate
+        uses: actions/checkout@v7
+        with:
+          repository: 777genius/agent-notifications
+          ref: 6dea2369b09883fdb47f419a557bd142e3f25630
+          path: TEST-candidate
+          persist-credentials: false
+      - name: Set up Go 1.26
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: false
+      - name: Prepare private TEST state and shared Go caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(git -C TEST-baseline rev-parse HEAD)" = "$BASELINE_SHA"
+          test "$(git -C TEST-candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          # These exact existing tests create eight inert native fixtures per
+          # process; adapter test init disables real LaunchServices registration.
+          # Reject source drift before comparing the same observable contracts.
+          for path in go.mod go.sum cmd/claude-notifications/install_runtime_skill_test.go cmd/claude-notifications/install_runtime_skill_rename_test.go cmd/claude-notifications/install_native_registration_test.go; do
+            cmp "TEST-baseline/$path" "TEST-candidate/$path"
+          done
+          private=$(mktemp -d "$RUNNER_TEMP/TEST-notifications-native-XXXXXX")
+          evidence="$RUNNER_TEMP/TEST-notifications-native-evidence"
+          mkdir -p "$private/home" "$private/tmp" "$private/gomod" "$private/gocache" "$evidence"
+          chmod 700 "$private" "$private/home" "$private/tmp"
+          {
+            echo "HOME=$private/home"
+            echo "USERPROFILE=$private/home"
+            echo "TMPDIR=$private/tmp"
+            echo "TMP=$private/tmp"
+            echo "TEMP=$private/tmp"
+            echo "XDG_CONFIG_HOME=$private/home/config"
+            echo "XDG_CACHE_HOME=$private/home/cache"
+            echo "XDG_DATA_HOME=$private/home/data"
+            echo "XDG_STATE_HOME=$private/home/state"
+            echo "CODEX_HOME=$private/home/codex"
+            echo "CLAUDE_HOME=$private/home/claude"
+            echo "CLAUDE_CONFIG_DIR=$private/home/claude"
+            echo "GOMODCACHE=$private/gomod"
+            echo "GOCACHE=$private/gocache"
+            echo "TEST_EVIDENCE=$evidence"
+          } >> "$GITHUB_ENV"
+      - name: Prepare and verify exact-source dependencies
+        working-directory: TEST-baseline
+        run: |
+          go version
+          go mod download
+          go mod verify
+      - name: Verify candidate dependencies
+        working-directory: TEST-candidate
+        run: go mod verify
+      - name: Qualify candidate native private-copy and signature contracts
+        working-directory: TEST-candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -count=1 -timeout 5m -race -v -run '^TestInstallerNative(ByteCachePrivateCopies|FixtureDarwinIsolation)$' ./cmd/claude-notifications 2>&1 | tee "$TEST_EVIDENCE/native-intel-contracts.log"
+      - name: Warm both exact sources with the unchanged fixture subset
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Exclude dependency/package builds and first-use Apple tool overhead
+          # from the paired samples. Every later command still starts a fresh
+          # test process, so its C byte cache starts empty on the candidate.
+          for revision in baseline candidate; do
+            (cd "TEST-$revision" && go test -count=1 -timeout 5m -race -v -run "$FIXTURE_TESTS" ./cmd/claude-notifications) 2>&1 | tee "$TEST_EVIDENCE/warm-$revision.log"
+          done
+      - name: Measure three paired selected-suite runs with warm Go caches
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, statistics, subprocess, time
+          evidence = pathlib.Path(os.environ['TEST_EVIDENCE'])
+          command = ['go', 'test', '-count=1', '-timeout', '5m', '-race', '-v', '-run', os.environ['FIXTURE_TESTS'], './cmd/claude-notifications']
+          receipt = {
+              'baselineSHA': os.environ['BASELINE_SHA'],
+              'candidateSHA': os.environ['CANDIDATE_SHA'],
+              'platform': 'macos-15-intel',
+              'command': command,
+              'scope': 'Selected unchanged suite wall time including the warm Go command; no total CI or compile-only claim.',
+              'samples': [],
+          }
+          for pair, order in enumerate((('baseline', 'candidate'), ('candidate', 'baseline'), ('baseline', 'candidate')), 1):
+              for revision in order:
+                  log = evidence / f'pair-{pair}-{revision}.log'
+                  start = time.perf_counter()
+                  with log.open('w') as output:
+                      result = subprocess.run(command, cwd=f'TEST-{revision}', stdout=output, stderr=subprocess.STDOUT, timeout=330)
+                  elapsed = time.perf_counter() - start
+                  receipt['samples'].append({'pair': pair, 'revision': revision, 'wallSeconds': round(elapsed, 6), 'exitCode': result.returncode})
+                  (evidence / 'timing.json').write_text(json.dumps(receipt, indent=2) + '\n')
+                  if result.returncode:
+                      raise SystemExit(f'{revision} pair {pair} failed; see {log.name}')
+          seconds = {revision: [s['wallSeconds'] for s in receipt['samples'] if s['revision'] == revision] for revision in ('baseline', 'candidate')}
+          receipt['mediansSeconds'] = {revision: statistics.median(values) for revision, values in seconds.items()}
+          (evidence / 'timing.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('TEST native Intel fixture subset, three paired fresh test processes after warming both exact sources.\n\n')
+              summary.write('| Revision | Median seconds | Sample seconds |\n| --- | ---: | --- |\n')
+              for revision in ('baseline', 'candidate'):
+                  summary.write(f"| {revision} | {receipt['mediansSeconds'][revision]:.3f} | {', '.join(f'{s:.3f}' for s in seconds[revision])} |\n")
+              summary.write('\nScope: eight existing inert native fixtures per process. Includes the warm Go command and fixture signing/installation. Does not measure total CI savings or isolate C compiler time. Full race/coverage gates remain in the product PR.\n')
+          PY
+      - name: Upload exact-source native Intel evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: TEST-native-intel-6dea2369
+          path: ${{ runner.temp }}/TEST-notifications-native-evidence
+          if-no-files-found: error
+          retention-days: 7
