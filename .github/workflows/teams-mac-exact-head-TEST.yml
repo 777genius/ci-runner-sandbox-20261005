@@ -1,0 +1,132 @@
+name: TEST exact-head Mac updater parallel boundary
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prepare-mac-inputs:
+    name: prepare-mac-inputs
+    runs-on: ubicloud-standard-4-arm
+    timeout-minutes: 5
+    outputs:
+      artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+      artifact_sha256: ${{ steps.bundle.outputs.artifact-digest }}
+    steps:
+    - name: Write TEST immutable fixture
+      run: 'mkdir "$RUNNER_TEMP/TEST-mac-exact-head-producer"
+
+        printf ''%s\n'' ''{"toolingSha": "722e589dffbeac2ec44562885189a4521bdd2bc9", "testOnly": true}'' > "$RUNNER_TEMP/TEST-mac-exact-head-producer/TEST-tooling-head.json"
+
+        '
+    - name: Upload TEST immutable fixture
+      id: bundle
+      uses: actions/upload-artifact@v7
+      with:
+        name: TEST-mac-exact-head-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/TEST-mac-exact-head-producer/
+        if-no-files-found: error
+        retention-days: 3
+        compression-level: 0
+  native-harness:
+    name: TEST exact-head Mac harness (${{ matrix.architecture }})
+    needs: prepare-mac-inputs
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - architecture: arm64
+          runner: namespace-profile-macos-15
+        - architecture: x64
+          runner: macos-15-intel
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        repository: 777genius/agent-teams-ai
+        ref: 722e589dffbeac2ec44562885189a4521bdd2bc9
+        persist-credentials: false
+    - name: Assert exact reviewed product SHA
+      run: test "$(git rev-parse HEAD)" = "722e589dffbeac2ec44562885189a4521bdd2bc9"
+    - uses: pnpm/action-setup@v6
+    - uses: actions/setup-node@v6
+      with:
+        node-version-file: .node-version
+        package-manager-cache: false
+    - name: Install pinned harness dependencies without product lifecycle scripts
+      run: pnpm install --frozen-lockfile --ignore-scripts
+    - parallel: &id001
+      - name: Check typed native Mac harness
+        run: 'node ./node_modules/@typescript/native/bin/tsc --noEmit -p tsconfig.updater-e2e.json
+
+          pnpm lint:ci:files -- scripts/e2e/release-updater/mac-updater.mts scripts/e2e/release-updater/mac-loopback.mts scripts/e2e/release-updater/mac-inputs.mts
+          scripts/e2e/release-updater/mac-mirror.mts scripts/e2e/release-updater/mac-serialization.mts scripts/e2e/release-updater/mac-serialization.test.mts
+          scripts/e2e/release-updater/mac-input-artifact.mts scripts/e2e/release-updater/mac-input-transfer.mts scripts/e2e/release-updater/mac-input-artifact.test.mts
+
+
+          touch "$RUNNER_TEMP/TEST-mac-exact-head/typed.complete"
+
+          '
+      - name: Verify compiler-independent observer serialization
+        run: 'pnpm exec tsx --test scripts/e2e/release-updater/mac-serialization.test.mts
+
+          touch "$RUNNER_TEMP/TEST-mac-exact-head/serialization.complete"
+
+          '
+      - name: Real TEST immutable artifact transport and product authority fixtures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.prepare-mac-inputs.outputs.artifact_id }}
+          ARTIFACT_SHA256: ${{ needs.prepare-mac-inputs.outputs.artifact_sha256 }}
+        run: 'set -euo pipefail
+
+          root="$RUNNER_TEMP/TEST-mac-exact-head/artifact"
+
+          mkdir "$root"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$root/run.json"
+
+          jq -e --arg sha "$GITHUB_SHA" --argjson attempt "$GITHUB_RUN_ATTEMPT" ''.head_sha == $sha and .run_attempt == $attempt and .event == "workflow_dispatch"''
+          "$root/run.json"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > "$root/jobs.json"
+
+          jq -e ''[.jobs[] | select(.name == "prepare-mac-inputs" and .status == "completed" and .conclusion == "success")] | length == 1'' "$root/jobs.json"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$root/artifact.json"
+
+          jq -e --arg digest "sha256:$ARTIFACT_SHA256" --argjson run "$GITHUB_RUN_ID" ''.expired == false and .digest == $digest and .workflow_run.id ==
+          $run'' "$root/artifact.json"
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$root/fixture.zip"
+
+          [[ "$(shasum -a 256 "$root/fixture.zip" | cut -d'' '' -f1)" == "$ARTIFACT_SHA256" ]]
+
+          [[ "$(unzip -Z1 "$root/fixture.zip")" == "TEST-tooling-head.json" ]]
+
+          unzip -p "$root/fixture.zip" TEST-tooling-head.json > "$root/TEST-tooling-head.json"
+
+          jq -e ''.toolingSha == "722e589dffbeac2ec44562885189a4521bdd2bc9" and .testOnly == true'' "$root/TEST-tooling-head.json"
+
+          # Product API intentionally trusts its reviewed producer only; use existing boundary fixtures.
+
+          pnpm exec tsx --test scripts/e2e/release-updater/mac-input-artifact.test.mts
+
+          touch "$RUNNER_TEMP/TEST-mac-exact-head/artifact.complete"
+
+          '
+    - name: Create TEST evidence paths
+      run: mkdir "$RUNNER_TEMP/TEST-mac-exact-head"
+    - parallel: *id001
+    - name: Native app surrogate after successful common barrier
+      run: "set -euo pipefail\nfor phase in typed serialization artifact; do\n  test -f \"$RUNNER_TEMP/TEST-mac-exact-head/$phase.complete\"\ndone\ntouch\
+        \ \"$RUNNER_TEMP/TEST-mac-exact-head/native-surrogate.complete\"\n"
+    - name: Preserve TEST boundary evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: TEST-mac-exact-head-${{ matrix.architecture }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/TEST-mac-exact-head/
+        if-no-files-found: warn
+        retention-days: 3
