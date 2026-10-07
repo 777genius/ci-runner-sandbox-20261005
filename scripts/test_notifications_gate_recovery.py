@@ -108,11 +108,16 @@ def fingerprint(value):
 
 
 def read_api(endpoint, filename, out, calls, raw=False):
+    require(not raw or endpoint in {f'repos/{REPO}/actions/jobs/{job_id}/logs' for job_id in JOBS},
+            'Raw output is restricted to authenticated original job logs')
     for attempt in (1, 2):
         require(calls[0] < 24, 'API call budget exceeded')
         calls[0] += 1
         try:
-            result = subprocess.run(['gh', 'api', '--method', 'GET', endpoint], capture_output=True, timeout=90)
+            command = ['gh', 'api', '--method', 'GET', endpoint]
+            if raw:
+                command.append('--allow-escape-sequences')
+            result = subprocess.run(command, capture_output=True, timeout=90)
             stderr = result.stderr.decode('utf-8', errors='replace')
             timed_out = False
         except subprocess.TimeoutExpired as error:
