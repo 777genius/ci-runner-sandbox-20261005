@@ -13,7 +13,7 @@ jobs:
             go: '1.26'
           - runner: namespace-profile-macos-15
             go: '1.25'
-          - runner: ubicloud-standard-4
+          - runner: ubuntu-latest
             go: '1.26'
           - runner: windows-latest
             go: '1.26'

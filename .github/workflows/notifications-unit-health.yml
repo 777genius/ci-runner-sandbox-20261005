@@ -11,7 +11,7 @@ jobs:
         include:
           - { runner: namespace-profile-macos-26, kind: darwin, go: '1.26' }
           - { runner: namespace-profile-macos-26, kind: darwin, go: '1.25' }
-          - { runner: ubicloud-standard-4, kind: linux, go: '1.26' }
+          - { runner: ubuntu-latest, kind: linux, go: '1.26' }
           - { runner: windows-latest, kind: windows, go: '1.26' }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
