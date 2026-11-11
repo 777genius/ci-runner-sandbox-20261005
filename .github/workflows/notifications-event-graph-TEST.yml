@@ -16,7 +16,7 @@ jobs:
   scope:
     if: ${{ !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) }}
     name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && 'Metadata edit ignored (scope)' || 'Classify macOS CI scope' }}
-    runs-on: ubicloud-standard-4-arm
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     outputs:
@@ -31,7 +31,7 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) && needs.scope.outputs.mode != 'docs' }}
     name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && format('Metadata edit ignored (macOS {0})', matrix.go) || format('Test on macOS ({0})', matrix.go) }}
-    runs-on: ubicloud-standard-4-arm
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     strategy:
@@ -55,7 +55,7 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) && needs.scope.outputs.mode != 'docs' }}
     name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && 'Metadata edit ignored (Swift)' || 'Swift notifier tests' }}
-    runs-on: ubicloud-standard-4-arm
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -70,7 +70,7 @@ jobs:
     name: ${{ github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null) && 'Metadata edit ignored (full macOS gate)' || 'Full macOS CI required' }}
     needs: [scope, test, swift-test]
     if: ${{ always() && !(github.event.action == 'edited' && github.event.changes.base == null && (github.event.changes.title != null || github.event.changes.body != null)) }}
-    runs-on: ubicloud-standard-4-arm
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     steps:

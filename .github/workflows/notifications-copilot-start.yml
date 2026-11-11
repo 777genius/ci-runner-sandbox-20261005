@@ -11,7 +11,7 @@ jobs:
         include:
           - { runner: windows-latest, go: '1.25' }
           - { runner: windows-latest, go: '1.26' }
-          - { runner: ubicloud-standard-4, go: '1.26' }
+          - { runner: ubuntu-latest, go: '1.26' }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
